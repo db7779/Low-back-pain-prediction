@@ -1,0 +1,287 @@
+# firstly, we will explore the dataset with some descriptive statistics and plots
+
+# loading the necessary libraries
+library(tidyverse)
+library(ggrepel)
+library(ggsci)
+library(gghighlight)
+library(ggfx)
+library(ggtext)
+library(ggforce)
+library(plotly)
+library(GGally)
+library(rstatix)
+library(readr)
+
+Dataset_spine <- read_csv("~/Dataset_spine.csv")
+View(Dataset_spine)
+
+# inspecting the data
+glimpse(Dataset_spine)
+str(Dataset_spine)
+# we have 14 columns, the first 13 of which are the variables of interest
+# the first 12 variables are numeric values of several anatomic landmarks, whereas
+# the col 13 is the (binary classification) value attributed to a person, depending 
+#on his anatomical characteristics. 
+# The columns are not properly named, but we can rename them based on the description on Kaggle
+
+library(data.table)
+setnames(Dataset_spine, old =colnames(Dataset_spine[-14]), 
+         new = c('pelvic_incidence','pelvic_tilt','lumbar_lordosis_angle','sacral_slope','pelvic_radius',
+                 'degree_spondylolisthesis','pelvic_slope','Direct_tilt','thoracic_slope',
+                 'cervical_tilt','sacrum_angle','scoliosis_slope','Diagnosis'))
+
+# we drop the last column since we don't need it
+Dataset_spine=Dataset_spine[-14]
+View(Dataset_spine)
+
+# some descriptive stats for our dataset
+skimr::skim(Dataset_spine)
+
+# some basic plots of our data
+
+ggplot(data = Dataset_spine, mapping = aes(x = pelvic_incidence, y = pelvic_tilt)) + 
+  geom_point()
+
+ggplot(Dataset_spine, aes(x = scoliosis_slope, y = cervical_tilt)) + 
+  geom_point(aes(color = Diagnosis))
+
+ggplot(data = Dataset_spine, mapping = aes(x = thoracic_slope, y = degree_spondylolisthesis)) + 
+  geom_point(aes(color = Diagnosis))
+
+# as expected, some variables seem to have high linear correlation
+# by inspection, we can see that degree of spondylolisthesis may be a good predictor of Diagnosis
+# we further investigate this relationship with some descriptive statistics
+summary_spond_abn <- Dataset_spine %>% 
+  filter(Diagnosis == "Abnormal") %>%
+  dplyr::summarise(mean_sp_abn=mean(degree_spondylolisthesis, na.rm = TRUE),
+                   sd_sp_abn=sd(degree_spondylolisthesis, na.rm = TRUE),
+                   max_sp_abn=max(degree_spondylolisthesis),
+                   min_sp_abn=min(degree_spondylolisthesis),
+                   median_sp_abn=median(degree_spondylolisthesis, na.rm = TRUE))
+summary_spond_abn
+
+summary_spond_norm <- Dataset_spine %>% 
+  filter(Diagnosis == "Normal") %>%
+  dplyr::summarise(mean_sp_norm=mean(degree_spondylolisthesis, na.rm = TRUE),
+                   sd_sp_norm=sd(degree_spondylolisthesis, na.rm = TRUE),
+                   max_sp_norm=max(degree_spondylolisthesis),
+                   min_sp_norm=min(degree_spondylolisthesis),
+                   median_sp_norm=median(degree_spondylolisthesis, na.rm = TRUE))
+summary_spond_norm
+
+# the inspection confirms our results! There is a big difference between mean values
+# and standard deviations. There is also a big difference in max values, which is 
+# not always informative (e.g. outliers). Lastly, median values also differ and 
+# we observe that within group mean and median values are approximately equal, which
+# may indicate that this variable is normally distributed. We still cannot be sure
+# any of the above is true, until we statistically test it
+
+# we also confirm the above by plotting degree_spondylolisthesis  grouped by Diagnosis
+
+ggplot(Dataset_spine, aes(x=degree_spondylolisthesis, color=Diagnosis)) +
+  geom_histogram(bins=40,fill="white", position="dodge")+
+  theme(legend.position="top")
+
+# we start examining correlations between our variables
+
+# heatmap for all the variables
+Dataset_spine %>%
+  select(colnames(Dataset_spine)) %>%
+  ggcorr(method = c("pairwise", "pearson"), label = TRUE, label_round = 2)
+
+# for a subset of highly (linearly) positively correlated variables, we test if 
+# the correlations are similar and statistically significant between Diagnosis groups
+# we also use Bonferroni correction to avoid false positives with multiple testing
+Dataset_spine %>%
+  group_by(Diagnosis) %>% 
+  cor_test(vars =c("pelvic_incidence", "sacral_slope"),
+           vars2 = c("lumbar_lordosis_angle", "pelvic_incidence"), method = "pearson") %>%
+  filter(var1 != var2) %>% adjust_pvalue(method = "bonferroni")
+
+# correlations are approximately the same between groups and are statistically significant
+
+# We are now interested to see if there are statistically significant differences 
+# of several variables between Diagnosis groups
+# We need to assess the distribution of the variables in order to choose between
+# parametric or nonparametric tests
+
+# the variables we are going to test are degree_spondylolisthesis and pelvic_incidence
+# for the distribution assessment we start by visual inspection
+
+Dataset_spine %>%
+  ggplot(aes(x = degree_spondylolisthesis, stat(density), fill = Diagnosis)) + 
+  geom_histogram(bins = 15, fill = "#56038a") + 
+  geom_density(alpha = .35, colour = "#f5bd05")
+# distributions between groups differ in kurtosis but seem to be normal
+
+Dataset_spine %>%
+  ggplot(aes(x = pelvic_incidence, stat(density), fill = Diagnosis)) + 
+  geom_histogram(bins = 15, fill = "#56038a") + 
+  geom_density(alpha = .35, colour = "#8833FF")
+# distributions are (approximately) normal
+
+Dataset_spine %>%
+  ggplot(aes(x=Diagnosis,y=degree_spondylolisthesis)) +
+  geom_boxplot(colour = "#bd3026", fill = "cadet blue")+
+  stat_summary(fun=mean)
+
+Dataset_spine %>%
+  ggplot(aes(x=Diagnosis,y=pelvic_incidence)) +
+  geom_boxplot(colour = "#bd3026", fill = "cadet blue")+
+  stat_summary(fun=mean)
+
+# boxplots also indicate that these variables are normally distributed
+# we now statistically test if there is indeed normality with Shapiro-Wilk test
+Dataset_spine %>%
+  group_by(Diagnosis) %>%
+  shapiro_test(pelvic_incidence) %>%
+  ungroup()
+
+Dataset_spine %>%
+  group_by(Diagnosis) %>%
+  shapiro_test(degree_spondylolisthesis) %>%
+  ungroup()
+# results of the tests above indicate that all four distributions are not normal
+# hence, we will utilize the Mann-Whitney U test which is suitable for two independent samples
+Dataset_spine %>% 
+  wilcox_test(pelvic_incidence ~ Diagnosis)
+
+Dataset_spine %>% 
+  wilcox_test(degree_spondylolisthesis ~ Diagnosis)
+# p values for both tests are <0.05, so we reject the null hypothesis that the 
+# samples from each group come from the same distribution
+
+# if for some reason (experts' opinion, previous research etc) we decided to treat
+# the data as normally distributed, we would apply the two-sample independent t test
+Dataset_spine %>% 
+  t_test(degree_spondylolisthesis ~ Diagnosis, var.equal = F, detailed = T)
+# in this case of parametric testing, we also reject the null hypothesis that the
+# two groups have the same mean, since p<0.05
+
+
+### Now we will try to build some models in order to predict if a person is 
+### classified as Normal or Abnormal based on his anatomical landmarks
+### we have a binary classification task, so some appropriate models would be
+### logistic regression, naive bayes, KNNs, Decision Trees, Random Forest, SVM, Neural networks, to name a few
+
+# we will implement some appropriate algorithms for this task, moving from 
+# low complexity levels and high interpretability to high complexity levels and 
+# low interpretability
+
+# LOGISTIC REGRESSION
+# first things first, we need to convert the outcome variable to factor
+new_data <- Dataset_spine
+new_data$Diagnosis <- as.factor(new_data$Diagnosis)
+
+univ_log_model <- glm(Diagnosis ~ pelvic_tilt, data = new_data, family = binomial())
+
+# full sigmoid curve for the logistic model
+ggplot(new_data, aes(x = pelvic_tilt, y = as.numeric(Diagnosis) - 1)) +
+  geom_point(alpha = .5) +
+  stat_smooth(method = "glm", se = FALSE, fullrange = TRUE,
+              method.args = list(family = binomial)) +
+  ylab("Diagnosis") + xlab("Pelvic tilt") + xlim(-1000, 1000)
+# we can see that the 1s (Abnormal) and 0s (Normal) are successfully separated
+# we now assess model fit with the log-likelihood method
+library(epiDisplay)
+univ_log_model$null.deviance
+univ_log_model$deviance
+lrtest(univ_log_model, glm(Diagnosis ~ 1, new_data, family = binomial))
+# model deviance is smaller than the null and p<0.05 so the addition of 
+# pelvic tilt as an explanatory variable improves model fit
+
+# model summary
+summary(univ_log_model)
+### INTERPRETATION
+# Intercept: The log-odds of being Abnormal when pelvic tilt=0 is -0.68168
+# For every unit increase in pelvic tilt the log-odds of being Abnormal decrease 
+# by -0.089, or equivalently, the odds of being Abnormal is multiplied by a 
+# factor of exp(-0.089)
+# p<0.05, so we can reject the null hypothesis that one unit increase in pelvic tilt
+# does not affect the odds of being Normal or Abnormal
+# For every unit increase in pelvic tilt, the odds of being Abnormal are 0.99 
+# times the odds of those with one pelvic tilt unit less
+
+# we could also try multivariate logistic regression woth any (meaningful) 
+# combination of explanatory variables, with the implementation as such:
+# multiv_log_model <- glm(Diagnosis ~ pelvic_tilt+cervical_tilt+scoliosis_slope+..., data = new_data, family = binomial())
+
+### decision trees, naive bayes and random forests (extension of decision trees) 
+### work best with categorical explanatory variables, which is not the case here.
+### We could discretize our variables based on meaningful categories and implement
+### these algorithms, but we will not do it in this project
+
+# K-NEAREST NEIGHBORS
+library(caTools)
+set.seed(123)
+# for the sake of simplicity we will use 4 variables for our predictions
+d <- new_data[c(1,4,6,10,13)]
+# Splitting data into train and test data and scaling
+ran <- sample(1:nrow(d), 0.7 * nrow(d)) 
+train_data <- d[ran,]
+test_data <- d[-ran,]
+x_train <- scale(train_data[, 1:4])
+x_test <- scale(test_data[, 1:4])
+
+# model fitting with number of neighbors=5
+knn_model <- knn(train = x_train,
+                      test = x_test,
+                      cl = train_data$Diagnosis,
+                      k = 5)
+# confusion matrix
+cm <- table(test_data$Diagnosis, knn_model)
+cm
+# Model Evaluation
+misClassError <- mean(knn_model != test_data$Diagnosis)
+print(paste('Accuracy =', 1-misClassError))
+# accuracy is medium to high (0.83) so our model performs well
+
+# NEURAL NETWORKS
+library(keras)
+library(fastDummies)
+library(caret)
+library(tensorflow)
+library(kerasR)
+
+# we will use the same data used on KNN model
+d <- new_data[c(1,4,6,10,13)]
+# Splitting data into train and test data and scaling
+ran <- sample(1:nrow(d), 0.7 * nrow(d)) 
+train_data <- d[ran,]
+test_data <- d[-ran,]
+x_train <- scale(train_data[, 1:4])
+x_test <- scale(test_data[, 1:4])
+y_train <- to_categorical(train_data$Diagnosis)
+y_test <- to_categorical(test_data$Diagnosis)
+
+# Network design
+model_nn <- keras_model_sequential()
+model_nn %>%
+  # Input layer
+  layer_dense(units = 256, activation = ‘relu’, input_shape =  ncol(x_train)) %>% 
+  layer_dropout(rate = 0.4) %>% 
+  # Hidden layer
+  layer_dense(units = 75, activation = ‘relu’) %>%
+  # Output layer
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 2, activation = ‘sigmoid’)
+
+# Network config
+history <- model_nn %>% compile(
+  loss = ‘binary_crossentropy’,
+  optimizer = ‘adam’,
+  metrics = c(‘accuracy’)
+)
+# Running our data
+model_nn %>% fit(
+  x_train, y_train, 
+  epochs = 100, 
+  batch_size = 5,
+  validation_split = 0.3
+)
+summary(model)
+
+# Calculating accuracy
+predictions <- model %>% predict_classes(x_test)
+
